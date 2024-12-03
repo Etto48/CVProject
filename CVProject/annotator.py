@@ -81,7 +81,7 @@ class Annotator(nn.Module):
             avg_loss = 0
             correct_predictions = 0
             total_predictions = 0
-            for i, (images, captions, lengths, next_tokens) in enumerate(batches):
+            for i, (images, captions, lengths, next_tokens, _) in enumerate(batches):
                 images = images.to(self.device)
                 captions = captions.to(self.device)
                 lengths = lengths.to(self.device)
@@ -107,7 +107,7 @@ class Annotator(nn.Module):
             correct_predictions = 0
             total_predictions = 0
             with torch.no_grad():
-                for i, (images, captions, lengths, next_tokens) in enumerate(batches):
+                for i, (images, captions, lengths, next_tokens, _) in enumerate(batches):
                     images = images.to(self.device)
                     captions = captions.to(self.device)
                     lengths = lengths.to(self.device)
@@ -134,7 +134,7 @@ class Annotator(nn.Module):
             path, map_location=annotator.device, weights_only=True))
         return annotator
 
-    def annotate(self, images, max_length: Optional[int] = 10, mode: Literal["greedy", "sample"] = "sample"):
+    def annotate(self, images, max_length: Optional[int] = 15, mode: Literal["greedy", "sample"] = "sample"):
         self.eval()
         batched = images.dim() == 4
         with torch.no_grad():
@@ -154,13 +154,13 @@ class Annotator(nn.Module):
                     case "greedy":
                         generated_tokens = generated_tokens.argmax(dim=-1)
                     case "sample":
-                        generated_token = torch.multinomial(
+                        generated_tokens = torch.multinomial(
                             torch.softmax(generated_tokens, dim=-1),
                             1)\
                             .squeeze(1)
 
-                finished |= (generated_tokens ==
-                             self.tokenizer.max_token_value)
+                finished |= \
+                    (generated_tokens == self.tokenizer.max_token_value)
                 if finished.all():
                     break
                 lengths += ~finished
@@ -198,15 +198,18 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     l = 3
     images = []
+    og_captions = []
     for i, data in enumerate(valid):
         images.append(data[0])
+        og_captions.append(data[3])
         if i == l * l - 1:
             break
+        
     images = torch.stack(images)
     captions = annotator.annotate(images)
     for i in range(l * l):
         plt.subplot(l, l, i + 1)
         plt.imshow((images[i].permute(1, 2, 0) + 1) / 2)
-        plt.title(captions[i])
+        plt.title(captions[i] + "\n" + og_captions[i])
         plt.axis("off")
     plt.show()
