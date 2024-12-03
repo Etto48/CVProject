@@ -44,7 +44,7 @@ class Annotator(nn.Module):
         self.deembedding = nn.Linear(self.embedding_dim, self.tokenizer.max_token_value + 1)
         self.to(self.device)
 
-    def forward(self, generated_caption, masks, images):
+    def forward(self, generated_caption, lengths, images):
         image_embeddings = self.encoder(images)
         caption_embeddings = self.embedding(generated_caption)
         output = self.decoder(
@@ -52,7 +52,7 @@ class Annotator(nn.Module):
             memory=image_embeddings, 
             tgt_mask=nn.Transformer.generate_square_subsequent_mask(caption_embeddings.shape[1], device=self.device),
             tgt_is_causal=True,)
-        last_output = output[:, -1, :]
+        last_output = output[torch.arange(output.shape[0]), lengths - 1]
         return self.deembedding(last_output)
 
     def fit(self, train: TextImageDataset, valid: TextImageDataset, epochs: int, _only_one_batch: bool = False):
@@ -68,13 +68,13 @@ class Annotator(nn.Module):
             avg_loss = 0
             correct_predictions = 0
             total_predictions = 0
-            for i, (images, captions, masks, next_tokens) in enumerate(batches):
+            for i, (images, captions, lengths, next_tokens) in enumerate(batches):
                 images = images.to(self.device)
                 captions = captions.to(self.device)
-                masks = masks.to(self.device)
+                lengths = lengths.to(self.device)
                 next_tokens = next_tokens.to(self.device)
                 optim.zero_grad()
-                generated_tokens = self(captions, masks, images)
+                generated_tokens = self(captions, lengths, images)
                 loss: torch.Tensor = loss_fn(generated_tokens, next_tokens)
                 loss.backward()
                 optim.step()
@@ -90,12 +90,12 @@ class Annotator(nn.Module):
             correct_predictions = 0
             total_predictions = 0
             with torch.no_grad():
-                for i, (images, captions, masks, next_tokens) in enumerate(batches):
+                for i, (images, captions, lengths, next_tokens) in enumerate(batches):
                     images = images.to(self.device)
                     captions = captions.to(self.device)
-                    masks = masks.to(self.device)
+                    lengths = lengths.to(self.device)
                     next_tokens = next_tokens.to(self.device)
-                    generated_tokens = self(captions, masks, images)
+                    generated_tokens = self(captions, lengths, images)
                     loss: torch.Tensor = loss_fn(generated_tokens, next_tokens)
                     avg_loss += loss.item()
                     correct_predictions += (generated_tokens.argmax(dim=-1) == next_tokens).sum().item()
@@ -114,28 +114,44 @@ class Annotator(nn.Module):
         annotator.load_state_dict(torch.load(path, map_location=annotator.device, weights_only=True))
         return annotator
     
-    def annotate(self, image, max_length: Optional[int] = 20):
+    def annotate(self, images, max_length: Optional[int] = 10):
         self.eval()
+        batched = images.dim() == 4
         with torch.no_grad():
-            image = image.to(self.device).unsqueeze(0)
-            caption = torch.tensor([self.tokenizer.max_token_value], dtype=torch.long).unsqueeze(0).to(self.device)
-            generated_caption = []
-            not_finished = False
+            images = images.to(self.device)
+            images = images.unsqueeze(0) if images.dim() == 3 else images
+
+            captions = torch.tensor([self.tokenizer.max_token_value], dtype=torch.long, device=self.device)\
+                .unsqueeze(0)\
+                .repeat(images.shape[0], 1)
+            finished = torch.tensor([False], dtype=torch.bool, device=self.device).repeat(images.shape[0])
+            lengths = torch.tensor([1], dtype=torch.long, device=self.device).repeat(images.shape[0])
             while True:
-                masks = torch.ones((1, len(generated_caption) + 1), dtype=torch.bool).to(self.device)
-                caption = caption.to(self.device)
-                generated_tokens = self(caption, masks, image)
+                generated_tokens = self(captions, lengths, images)
                 generated_token = torch.multinomial(torch.softmax(generated_tokens, dim=-1), 1).squeeze(1)
-                
-                if generated_token == self.tokenizer.max_token_value:
+                finished |= (generated_token == self.tokenizer.max_token_value)
+                if finished.all():
                     break
-                generated_caption.append(generated_token)
-                caption = torch.cat([caption, generated_token.unsqueeze(0)], dim=1)
-                if max_length is not None and len(generated_caption) >= max_length:
-                    not_finished = True
+                lengths += ~finished
+
+                captions = torch.cat([captions, generated_token.unsqueeze(1)], dim=1)
+                if max_length is not None and captions.shape[1] >= max_length:
                     break
-            append = "..." if not_finished else ""
-            return self.tokenizer.decode(generated_caption) + append
+        outputs = []
+        for i in range(captions.shape[0]):
+            caption = captions[i, 1:lengths[i]].cpu().numpy()
+            output = self.tokenizer.decode(caption)
+            if not finished[i]:
+                output += "..."
+            outputs.append(output)
+        if batched:
+            return outputs
+        else:
+            assert len(outputs) == 1
+            return outputs[0]
+            
+
+            
         
 if __name__ == "__main__":
     train = TextImageDataset.load_train()
@@ -150,13 +166,19 @@ if __name__ == "__main__":
             pass
     annotator.save("data/annotator.pt")
     import matplotlib.pyplot as plt
-    data = next(iter(valid))
-    print(annotator.tokenizer.decode(data[1].numpy()))
-    img, _, _ = data
-    cap = annotator.annotate(img)
-    plt.imshow((img.permute(1, 2, 0) + 1) / 2)
-    plt.axis("off")
-    plt.title(cap)
+    l = 3
+    images = []
+    for i, data in enumerate(valid):
+        images.append(data[0])
+        if i == l * l - 1:
+            break
+    images = torch.stack(images)
+    captions = annotator.annotate(images)
+    for i in range(l * l):
+        plt.subplot(l, l, i + 1)
+        plt.imshow((images[i].permute(1, 2, 0) + 1) / 2)
+        plt.title(captions[i])
+        plt.axis("off")
     plt.show()
     
     

@@ -71,13 +71,11 @@ class TextImageDataset(IterableDataset):
     @staticmethod
     def collate_fn(batch: list):
         images, captions, next_tokens = zip(*batch)
-        masks = torch.ones((len(captions), max(len(c) for c in captions)), dtype=torch.bool)
-        for i, c in enumerate(captions):
-            masks[i, len(c):] = False
+        lengths = torch.tensor([len(c) for c in captions])
         captions = torch.nn.utils.rnn.pad_sequence(captions, batch_first=True, padding_value=0)
         images = torch.stack(images)
         next_tokens = torch.stack(next_tokens)
-        return images, captions, masks, next_tokens
+        return images, captions, lengths, next_tokens
 
 if __name__ == "__main__":
     dataset = TextImageDataset.load_train()
