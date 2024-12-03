@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 
+from CVProject.pos_enc import PositionalEncoding
+
 class ViT(nn.Module):
     def __init__(self, conv_depth: int, embedding_dim: int, filter_size: int, dropout: float, transformer_depth: int, transformer_width: int, transformer_heads: int):
         super().__init__()
@@ -20,6 +22,7 @@ class ViT(nn.Module):
             if i < conv_depth - 1:
                 self.conv.append(nn.MaxPool2d(4))
         self.conv.append(nn.Flatten(start_dim=2))
+        self.pos_enc = PositionalEncoding(embedding_dim)
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=embedding_dim,
@@ -35,5 +38,6 @@ class ViT(nn.Module):
     def forward(self, x):
         x = self.conv(x)
         x = x.permute(0, 2, 1)
+        x = self.pos_enc(x)
         x = self.transformer(x)
         return x
