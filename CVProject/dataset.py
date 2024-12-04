@@ -36,15 +36,26 @@ class TextImageDataset(IterableDataset):
     
     @staticmethod
     def load_train():
-        return TextImageDataset.load("/home/ettore/Documents/Dev/Programs/stable-diffusion/data/annotations_trainval2017/annotations/captions_train2017.json", "/home/ettore/Documents/Dev/Programs/stable-diffusion/data/train2017")
+        return TextImageDataset.load("/home/ettore/Downloads/COCO/annotations_trainval2017/annotations/captions_train2017.json", "/home/ettore/Downloads/COCO/train2017")
     
     @staticmethod
     def load_valid():
-        return TextImageDataset.load("/home/ettore/Documents/Dev/Programs/stable-diffusion/data/annotations_trainval2017/annotations/captions_val2017.json", "/home/ettore/Documents/Dev/Programs/stable-diffusion/data/val2017")
+        return TextImageDataset.load("/home/ettore/Downloads/COCO/annotations_trainval2017/annotations/captions_val2017.json", "/home/ettore/Downloads/COCO/val2017")
     
     def __len__(self):  
-        return len(self.df)
+        return len(self.df) // 10
 
+    def _load_image(self, image_path: str):
+        image = torchvision.io.decode_image(torchvision.io.read_file(image_path))
+        image = torchvision.transforms.functional.resize(
+            image, 
+            (self.target_size, self.target_size), 
+            torchvision.transforms.InterpolationMode.BILINEAR)
+        if image.shape[0] == 1:
+            image = image.repeat(3, 1, 1)
+        image = (image.to(torch.float32) - 127.5) / 127.5
+        return image
+    
     def __iter__(self):
         for _ in range(len(self)):
             idx = np.random.randint(len(self))
@@ -52,6 +63,7 @@ class TextImageDataset(IterableDataset):
             caption = row["caption"]
             plaintext_caption = caption
             image_path = row["image_path"]
+            image = self._load_image(image_path)
             caption = [self.tokenizer.max_token_value] + self.tokenizer.encode(caption) + [self.tokenizer.max_token_value]
             truncation_point = np.random.randint(1, len(caption))
             generated_caption = caption[:truncation_point]
@@ -59,14 +71,7 @@ class TextImageDataset(IterableDataset):
             next_token = torch.tensor(next_token, dtype=torch.long)
             caption = generated_caption
             caption = torch.tensor(caption, dtype=torch.long)
-            image = torchvision.io.decode_image(torchvision.io.read_file(image_path))
-            image = torchvision.transforms.functional.resize(
-                image, 
-                (self.target_size, self.target_size), 
-                torchvision.transforms.InterpolationMode.BILINEAR)
-            if image.shape[0] == 1:
-                image = image.repeat(3, 1, 1)
-            image = (image.to(torch.float32) - 127.5) / 127.5
+            
             yield image, caption, next_token, plaintext_caption
     
     @staticmethod

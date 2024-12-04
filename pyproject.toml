@@ -2,7 +2,7 @@
 name = "CVProject"
 version = "0.1.0"
 description = "A Python project"
-dependencies = [ "torch", "torchvision", "pandas", "tiktoken", "tqdm", "matplotlib",]
+dependencies = [ "torch", "torchvision", "pandas", "tiktoken", "tqdm", "matplotlib"]
 [[project.authors]]
 name = "Ettore Ricci"
 email = "ettore.ricci.coding@gmail.com"
