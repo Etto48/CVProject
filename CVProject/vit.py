@@ -26,8 +26,7 @@ class ViT(nn.Module):
             LambdaLayer(lambda x: x * 2 - 1)
         )
         self.conv = nn.Sequential(
-            nn.Conv2d(3, embedding_dim, kernel_size=patch_size, stride=patch_size),
-            nn.BatchNorm2d(embedding_dim),
+            nn.Conv2d(3, embedding_dim, kernel_size=patch_size, stride=patch_size // 2),
             nn.GELU(),
             LearnablePositionalEncoding2d(embedding_dim),
             nn.Flatten(start_dim=2),
@@ -71,7 +70,7 @@ if __name__ == "__main__":
     imgs = []
     l = 4
     for i, data in enumerate(valid):
-        images, _, _, _ = data
+        images, _, _ = data
         imgs.append(images)
         if i == l:
             break

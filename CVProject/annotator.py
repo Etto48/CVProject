@@ -16,9 +16,12 @@ class Annotator(nn.Module):
         super().__init__()
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
-        self.embedding_dim = 128
+        self.embedding_dim = 256
         self.heads = 8
-        self.dropout = 0.1
+        self.patch_size = 16
+        self.encoder_depth = 4
+        self.decoder_depth = 3
+        self.dropout = 0
 
         self.tokenizer = tiktoken.get_encoding("gpt2")
         self.embedding = nn.Sequential(
@@ -26,53 +29,64 @@ class Annotator(nn.Module):
                 num_embeddings=self.tokenizer.max_token_value + 1,
                 embedding_dim=self.embedding_dim,
             ),
-            nn.LayerNorm(self.embedding_dim),
             PositionalEncoding()
         )
         self.encoder = ViT(
             embedding_dim=self.embedding_dim,
-            patch_size=32,
+            patch_size=self.patch_size,
             dropout=self.dropout,
-            transformer_depth=1,
-            transformer_width=self.embedding_dim * self.heads,
+            transformer_depth=self.encoder_depth,
+            transformer_width=self.embedding_dim,
             transformer_heads=self.heads)
 
         self.decoder = nn.TransformerDecoder(
             nn.TransformerDecoderLayer(
                 d_model=self.embedding_dim,
                 nhead=self.heads,
-                dim_feedforward=self.embedding_dim * self.heads,
+                dim_feedforward=self.embedding_dim,
                 dropout=self.dropout,
                 batch_first=True,
                 activation="gelu"),
-            num_layers=1,
+            num_layers=self.decoder_depth,
             norm=nn.LayerNorm(self.embedding_dim)
         )
 
         self.deembedding = nn.Sequential(
-            nn.Linear(self.embedding_dim * 2, self.tokenizer.max_token_value + 1)
+            nn.Dropout(self.dropout),
+            nn.Linear(self.embedding_dim, self.tokenizer.max_token_value + 1)
         )
         self.to(self.device)
 
-    def forward(self, generated_caption, lengths, images):
+    def forward(self, generated_caption, images):
         image_embeddings: torch.Tensor = self.encoder(images)
+        if self.training:
+            random_tokens = torch.randint(
+                0, 
+                self.tokenizer.max_token_value, 
+                generated_caption.shape, 
+                device=self.device)
+            random_mask = torch.rand(generated_caption.shape, device=self.device) < 0.2
+            generated_caption = torch.where(random_mask, generated_caption, random_tokens)
+
         caption_embeddings: torch.Tensor = self.embedding(generated_caption)
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(
             caption_embeddings.shape[1], device=self.device)
-        output = self.decoder(
-            tgt=caption_embeddings,
-            memory=image_embeddings,
-            tgt_mask=tgt_mask,
-            tgt_is_causal=True)
-        last_output = output[torch.arange(output.shape[0]), lengths - 1]
-        image_class_embedding = image_embeddings[:, 0]
-        last_output = torch.cat([last_output, image_class_embedding], dim=1)
-        return self.deembedding(last_output)
+        caption_embeddings = self.decoder(
+            caption_embeddings, image_embeddings, tgt_mask=tgt_mask)
+        
+        output = self.deembedding(caption_embeddings)
+        return output
+
+    @staticmethod
+    def loss_fn(generated_tokens: torch.Tensor, expected_output: torch.Tensor, lengths: torch.Tensor):
+        mask = torch.arange(generated_tokens.shape[1], device=generated_tokens.device)\
+            .unsqueeze(0) < lengths.unsqueeze(1)
+        loss = nn.functional.cross_entropy(generated_tokens[mask], expected_output[mask], reduction="mean", label_smoothing=0.1)
+        return loss
 
     def fit(self, train: TextImageDataset, valid: TextImageDataset, epochs: int):
-        optim = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optim = torch.optim.Adam(self.parameters(), lr=1e-4)
         history = {"train": [], "valid": []}
-        loss_fn = nn.CrossEntropyLoss()
         bs = 32
         train_loader = torch.utils.data.DataLoader(
             dataset=train, batch_size=bs, collate_fn=TextImageDataset.collate_fn)
@@ -93,20 +107,22 @@ class Annotator(nn.Module):
             avg_loss = 0
             correct_predictions = 0
             total_predictions = 0
-            for i, (images, captions, lengths, next_tokens, _) in enumerate(batches):
+            for i, (images, captions, lengths, _) in enumerate(batches):
                 images = images.to(self.device)
                 captions = captions.to(self.device)
                 lengths = lengths.to(self.device)
-                next_tokens = next_tokens.to(self.device)
+                output_sequence = captions[:, :-1]
+                expected_output = captions[:, 1:]
                 optim.zero_grad()
-                generated_tokens = self(captions, lengths, images)
-                loss: torch.Tensor = loss_fn(generated_tokens, next_tokens)
+                generated_tokens = self(output_sequence, images)
+                loss: torch.Tensor = self.loss_fn(generated_tokens, expected_output, lengths)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.parameters(), 1)
                 optim.step()
                 avg_loss += loss.item()
-                correct_predictions += (generated_tokens.argmax(dim=-1)
-                                        == next_tokens).sum().item()
+                mask = torch.arange(generated_tokens.shape[1], device=generated_tokens.device)\
+                    .unsqueeze(0) < lengths.unsqueeze(1)
+                next_tokens = generated_tokens.argmax(dim=-1)
+                correct_predictions += (next_tokens[mask] == expected_output[mask]).sum().item()
                 total_predictions += next_tokens.numel()
                 batches.set_postfix(
                     loss=avg_loss / (i + 1), accuracy=f"{correct_predictions / total_predictions:0.2%}")
@@ -120,16 +136,19 @@ class Annotator(nn.Module):
             correct_predictions = 0
             total_predictions = 0
             with torch.no_grad():
-                for i, (images, captions, lengths, next_tokens, _) in enumerate(batches):
+                for i, (images, captions, lengths, _) in enumerate(batches):
                     images = images.to(self.device)
                     captions = captions.to(self.device)
                     lengths = lengths.to(self.device)
-                    next_tokens = next_tokens.to(self.device)
-                    generated_tokens = self(captions, lengths, images)
-                    loss: torch.Tensor = loss_fn(generated_tokens, next_tokens)
+                    output_sequence = captions[:, :-1]
+                    expected_output = captions[:, 1:]
+                    generated_tokens = self(output_sequence, images)
+                    loss: torch.Tensor = self.loss_fn(generated_tokens, expected_output, lengths)
                     avg_loss += loss.item()
-                    correct_predictions += (generated_tokens.argmax(dim=-1)
-                                            == next_tokens).sum().item()
+                    mask = torch.arange(generated_tokens.shape[1], device=generated_tokens.device)\
+                        .unsqueeze(0) < lengths.unsqueeze(1)
+                    next_tokens = generated_tokens.argmax(dim=-1)
+                    correct_predictions += (next_tokens[mask] == expected_output[mask]).sum().item()
                     total_predictions += next_tokens.numel()
                     batches.set_postfix(
                         loss=avg_loss / (i + 1), accuracy=f"{correct_predictions / total_predictions:0.2%}")
@@ -173,7 +192,8 @@ class Annotator(nn.Module):
             probabilities = torch.tensor(
                 [1.0], dtype=torch.float32, device=self.device).repeat(images.shape[0])
             while True:
-                generated_tokens_distribution = self(captions, lengths, images)
+                generated_tokens_distribution = self(captions, images)
+                generated_tokens_distribution = generated_tokens_distribution[:, -1]
                 match mode:
                     case "greedy":
                         generated_tokens = generated_tokens_distribution.argmax(
@@ -229,6 +249,7 @@ if __name__ == "__main__":
     annotator = Annotator()
     if os.path.exists("data/annotator.pt"):
         annotator = Annotator.load("data/annotator.pt")
+        history = None
     else:
         try:
             history = annotator.fit(train, valid, epochs=100)
@@ -251,7 +272,7 @@ if __name__ == "__main__":
         og_captions = []
         for i, data in enumerate(valid):
             images.append(data[0])
-            og_captions.append(data[3])
+            og_captions.append(data[2])
             if i == l * l - 1:
                 break
 

@@ -65,23 +65,16 @@ class TextImageDataset(IterableDataset):
             image_path = row["image_path"]
             image = self._load_image(image_path)
             caption = [self.tokenizer.max_token_value] + self.tokenizer.encode(caption) + [self.tokenizer.max_token_value]
-            truncation_point = np.random.randint(1, len(caption))
-            generated_caption = caption[:truncation_point]
-            next_token = caption[truncation_point]
-            next_token = torch.tensor(next_token, dtype=torch.long)
-            caption = generated_caption
             caption = torch.tensor(caption, dtype=torch.long)
-            
-            yield image, caption, next_token, plaintext_caption
+            yield image, caption, plaintext_caption
     
     @staticmethod
     def collate_fn(batch: list):
-        images, captions, next_tokens, plaintext_caption = zip(*batch)
+        images, captions, plaintext_caption = zip(*batch)
         lengths = torch.tensor([len(c) for c in captions])
         captions = torch.nn.utils.rnn.pad_sequence(captions, batch_first=True, padding_value=0)
         images = torch.stack(images)
-        next_tokens = torch.stack(next_tokens)
-        return images, captions, lengths, next_tokens, plaintext_caption
+        return images, captions, lengths, plaintext_caption
 
 if __name__ == "__main__":
     dataset = TextImageDataset.load_train()
