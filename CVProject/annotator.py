@@ -19,7 +19,7 @@ class Annotator(nn.Module):
             "cuda" if torch.cuda.is_available() else "cpu")
         self.embedding_dim = 768
         self.heads = 12
-        self.decoder_depth = 6
+        self.decoder_depth = 8
         self.dropout = 0.1
 
         self.tokenizer = tiktoken.get_encoding("gpt2")
@@ -283,7 +283,7 @@ if __name__ == "__main__":
             dataset=valid, batch_size=l * l, collate_fn=TextImageDataset.collate_fn,
             sampler=torch.utils.data.RandomSampler(valid, replacement=True, num_samples=l * l))
         images, _, _, _ = next(iter(valid_loader))
-        captions, probabilities = annotator.annotate(images, mode="sample", top_k=5)
+        captions, probabilities = annotator.annotate(images, mode="greedy")
         for i in range(l * l):
             plt.subplot(l, l, i + 1)
             plt.imshow(images[i].permute(1, 2, 0))
