@@ -4,35 +4,17 @@ import torchvision
 from tqdm.auto import tqdm
 
 from CVProject.dataset import TextImageDataset
+from CVProject.image_embedding import ImageEmbedding
 from CVProject.lambda_layer import LambdaLayer
 from CVProject.pos_enc import LearnablePositionalEncoding, LearnablePositionalEncoding2d, PositionalEncoding, PositionalEncoding2d
 
 
 class ViT(nn.Module):
-    def __init__(self, embedding_dim: int, patch_size: int, dropout: float, transformer_depth: int, transformer_width: int, transformer_heads: int):
+    def __init__(self, embedding_dim: int, conv_depth: int, conv_width: int, dropout: float, transformer_depth: int, transformer_width: int, transformer_heads: int):
         super().__init__()
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
-        self.augmentation = nn.Sequential(
-            LambdaLayer(lambda x: (x + 1) / 2),
-            torchvision.transforms.RandomHorizontalFlip(),
-            torchvision.transforms.RandomRotation(
-                10, interpolation=torchvision.transforms.InterpolationMode.BILINEAR, 
-                fill=0.5),
-            torchvision.transforms.RandomResizedCrop(
-                128, scale=(0.8, 1.0), ratio=(0.75, 1.3)),
-            torchvision.transforms.ColorJitter(
-                brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
-            LambdaLayer(lambda x: x * 2 - 1)
-        )
-        self.conv = nn.Sequential(
-            nn.Conv2d(3, embedding_dim, kernel_size=patch_size, stride=patch_size // 2),
-            nn.GELU(),
-            LearnablePositionalEncoding2d(embedding_dim),
-            nn.Flatten(start_dim=2),
-            LambdaLayer(lambda x: x.permute(0, 2, 1))
-        )
-        self.class_embedding = nn.Parameter(torch.randn(1, 1, embedding_dim))
+        self.conv = ImageEmbedding(embedding_dim, conv_depth, conv_width, dropout)
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
                 d_model=embedding_dim,
@@ -53,10 +35,7 @@ class ViT(nn.Module):
         return x
 
     def encode(self, x):
-        if self.training:
-            x = self.augmentation(x)
         x = self.conv(x)
-        x = torch.cat([self.class_embedding.repeat(x.shape[0], 1, 1), x], dim=1)
         x = self.transformer(x)
         return x
 
