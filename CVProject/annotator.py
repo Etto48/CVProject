@@ -189,61 +189,117 @@ class Annotator(nn.Module):
             path, map_location=annotator.device, weights_only=True))
         return annotator
 
-    def annotate(self, images, max_length: Optional[int] = 15, mode: Literal["greedy", "sample"] = "sample", top_k: Optional[int] = None):
+    def _beam_search(self, image_embeddings: torch.Tensor, max_length: int, beam_size: int):
+        batch_size = image_embeddings.shape[0]
+        captions = torch.full((beam_size, batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        finished = torch.full((beam_size, batch_size), False, dtype=torch.bool, device=self.device)
+        lengths = torch.full((beam_size, batch_size), 1, dtype=torch.long, device=self.device)
+        probabilities = torch.full((beam_size, batch_size), 1.0, dtype=torch.float32, device=self.device)
+        loading_bar = tqdm(total=max_length, desc="Generating captions (beam)")
+        while True:
+            generated_tokens_distribution = \
+                self.forward_with_embeddings(captions.view(-1, captions.shape[-1]), image_embeddings.repeat(beam_size, 1, 1))[:, -1] \
+                    .view(beam_size, batch_size, -1)
+
+            # Select top k tokens for each beam
+            top_k_values_for_beam, top_k_indices_for_beam = torch.topk(
+                generated_tokens_distribution, beam_size, dim=-1)
+            
+            # Compute probabilities for each beam [beam, batch, beam]
+            top_k_probabilities_for_beam = torch.softmax(top_k_values_for_beam, dim=-1)
+            top_k_probabilities_for_beam *= probabilities.unsqueeze(-1) 
+
+            # Select top k beams 
+            # [beam*beam, batch]
+            top_k_squared_probabilities = top_k_probabilities_for_beam.permute(0, 2, 1).reshape(beam_size * beam_size, batch_size)
+            # [beam, batch]
+            top_k_probabilities, top_k_indices = torch.topk(
+                top_k_squared_probabilities, beam_size, dim=0)
+            
+            new_tokens = top_k_indices_for_beam.permute(0, 2, 1).reshape(beam_size * beam_size, batch_size)[top_k_indices, torch.arange(batch_size)]
+            probabilities = top_k_probabilities
+            new_finished = (new_tokens == self.tokenizer.max_token_value)
+            finished |= new_finished
+
+            if finished.all():
+                break
+            lengths += ~finished
+            captions = torch.cat([captions.view(-1, batch_size, captions.shape[-1]), new_tokens.view(beam_size, batch_size, 1)], dim=2)
+            if max_length is not None and captions.shape[2] >= max_length:
+                break
+            loading_bar.update(1)
+        loading_bar.close()
+        
+        best_beam_for_batch_idx = torch.argmax(probabilities, dim=0)
+        best_beam = captions[best_beam_for_batch_idx, torch.arange(batch_size), :]
+        return best_beam, lengths[best_beam_for_batch_idx, torch.arange(batch_size)], probabilities[best_beam_for_batch_idx, torch.arange(batch_size)], finished[best_beam_for_batch_idx, torch.arange(batch_size)]
+    
+    def _sample_search(self, image_embeddings: torch.Tensor, max_length: int, top_k: Optional[int]):
+        batch_size = image_embeddings.shape[0]
+        captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
+        lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
+        probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
+        while True:
+            generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)[:, -1]
+            match top_k:
+                case None:
+                    generated_tokens = torch.multinomial(
+                        torch.softmax(generated_tokens_distribution, dim=-1), 1)\
+                        .squeeze(1)
+                case _:
+                    top_k_values, top_k_indices = torch.topk(
+                        generated_tokens_distribution, top_k, dim=-1)
+                    top_k_probabilities = torch.softmax(top_k_values, dim=-1)
+                    generated_tokens = torch.multinomial(
+                        top_k_probabilities, 1)\
+                        .squeeze(1)
+                    generated_tokens = top_k_indices[generated_tokens]
+            probabilities *= torch.softmax(generated_tokens_distribution, dim=-1)[torch.arange(batch_size), generated_tokens]
+            finished |= (generated_tokens == self.tokenizer.max_token_value)
+            if finished.all():
+                break
+            lengths += ~finished
+            captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
+            if max_length is not None and captions.shape[1] >= max_length:
+                break
+        return captions, lengths, probabilities, finished
+        
+    def _greedy_search(self, image_embeddings: torch.Tensor, max_length: int):
+        batch_size = image_embeddings.shape[0]
+        captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
+        lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
+        probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
+        while True:
+            generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)[:, -1]
+            generated_tokens = generated_tokens_distribution.argmax(dim=-1)
+            probabilities *= torch.softmax(generated_tokens_distribution, dim=-1)[torch.arange(batch_size), generated_tokens]
+            finished |= (generated_tokens == self.tokenizer.max_token_value)
+            if finished.all():
+                break
+            lengths += ~finished
+            captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
+            if max_length is not None and captions.shape[1] >= max_length:
+                break
+        return captions, lengths, probabilities, finished
+
+    def annotate(self, images, max_length: int = 15, mode: Literal["greedy", "sample", "beam"] = "sample", top_k: Optional[int] = None):
         self.eval()
         batched = isinstance(images, list) or isinstance(images, tuple)
         with torch.no_grad():
             images = images
             images = [images] if not batched else images
-            batch_size = len(images)
             image_embeddings = self.encode_images(images)
 
-            captions = torch.tensor([self.tokenizer.max_token_value], dtype=torch.long, device=self.device)\
-                .unsqueeze(0)\
-                .repeat(batch_size, 1)
-            finished = torch.tensor(
-                [False], dtype=torch.bool, device=self.device).repeat(batch_size)
-            lengths = torch.tensor(
-                [1], dtype=torch.long, device=self.device).repeat(batch_size)
-            probabilities = torch.tensor(
-                [1.0], dtype=torch.float32, device=self.device).repeat(batch_size)
-            while True:
-                generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)
-                generated_tokens_distribution = generated_tokens_distribution[:, -1]
-                match mode:
-                    case "greedy":
-                        generated_tokens = generated_tokens_distribution.argmax(
-                            dim=-1)
-                    case "sample":
-                        if top_k is not None:
-                            top_k_values, top_k_indices = torch.topk(
-                                generated_tokens_distribution, top_k, dim=-1)
-                            top_k_probabilities = torch.softmax(
-                                top_k_values, dim=-1)
-                            generated_tokens = torch.multinomial(
-                                top_k_probabilities, 1)\
-                                .squeeze(1)
-                            generated_tokens = top_k_indices[
-                                torch.arange(generated_tokens.shape[0]), generated_tokens]
-                        else:
-                            generated_tokens = torch.multinomial(
-                                torch.softmax(generated_tokens_distribution, dim=-1), 1)\
-                                .squeeze(1)
-                        
-                probabilities *= torch.softmax(
-                    generated_tokens_distribution,
-                    dim=-1)[torch.arange(generated_tokens.shape[0]), generated_tokens]
-
-                finished |= \
-                    (generated_tokens == self.tokenizer.max_token_value)
-                if finished.all():
-                    break
-                lengths += ~finished
-
-                captions = torch.cat(
-                    [captions, generated_tokens.unsqueeze(1)], dim=1)
-                if max_length is not None and captions.shape[1] >= max_length:
-                    break
+            match mode:
+                case "greedy":
+                    captions, lengths, probabilities, finished = self._greedy_search(image_embeddings, max_length)
+                case "sample":
+                    captions, lengths, probabilities, finished = self._sample_search(image_embeddings, max_length, top_k)
+                case "beam":
+                    captions, lengths, probabilities, finished = self._beam_search(image_embeddings, max_length, top_k)
+                
         outputs = []
         for i in range(captions.shape[0]):
             caption = captions[i, 1:lengths[i]].cpu().numpy()
@@ -263,15 +319,7 @@ if __name__ == "__main__":
     train = TextImageDataset.load_train()
     valid = TextImageDataset.load_valid()
     annotator = Annotator()
-    if os.path.exists("data/annotator.pt"):
-        annotator = Annotator.load("data/annotator.pt")
-        history = None
-    else:
-        try:
-            history = annotator.fit(train, valid=valid, epochs=100)
-        except KeyboardInterrupt:
-            history = None
-            pass
+    history = annotator.fit(train, valid=valid, epochs=100)
     annotator.save("data/annotator.pt")
     if history is not None:
         plt.plot(history["train"], label="Train")
@@ -279,19 +327,4 @@ if __name__ == "__main__":
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
         plt.legend()
-        plt.show()
-    display_demo = input("Do you want to display a demo? [y/N]: ")
-    display_demo = display_demo.lower() == "y"
-    if display_demo:
-        l = 3
-        valid_loader = torch.utils.data.DataLoader(
-            dataset=valid, batch_size=l * l, collate_fn=TextImageDataset.collate_fn,
-            sampler=torch.utils.data.RandomSampler(valid, replacement=True, num_samples=l * l))
-        images, _, _, _ = next(iter(valid_loader))
-        captions, probabilities = annotator.annotate(images, mode="greedy")
-        for i in range(l * l):
-            plt.subplot(l, l, i + 1)
-            plt.imshow(images[i].permute(1, 2, 0))
-            plt.title(captions[i] + "\n" + f"{probabilities[i]:.8%}")
-            plt.axis("off")
         plt.show()
