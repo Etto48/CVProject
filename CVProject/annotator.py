@@ -7,10 +7,7 @@ from tqdm.auto import tqdm
 import transformers
 
 from CVProject.dataset import TextImageDataset
-from CVProject.image_embedding import ImageEmbedding
-from CVProject.lambda_layer import LambdaLayer
 from CVProject.pos_enc import PositionalEncoding
-from CVProject.vit import ViT
 
 class Annotator(nn.Module):
     def __init__(self):
@@ -240,6 +237,7 @@ class Annotator(nn.Module):
         finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
         lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
         probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
+        loading_bar = tqdm(total=max_length, desc="Generating captions (sample)")
         while True:
             generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)[:, -1]
             match top_k:
@@ -254,7 +252,7 @@ class Annotator(nn.Module):
                     generated_tokens = torch.multinomial(
                         top_k_probabilities, 1)\
                         .squeeze(1)
-                    generated_tokens = top_k_indices[generated_tokens]
+                    generated_tokens = top_k_indices[torch.arange(batch_size), generated_tokens]
             probabilities *= torch.softmax(generated_tokens_distribution, dim=-1)[torch.arange(batch_size), generated_tokens]
             finished |= (generated_tokens == self.tokenizer.max_token_value)
             if finished.all():
@@ -263,6 +261,8 @@ class Annotator(nn.Module):
             captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
             if max_length is not None and captions.shape[1] >= max_length:
                 break
+            loading_bar.update(1)
+        loading_bar.close()
         return captions, lengths, probabilities, finished
         
     def _greedy_search(self, image_embeddings: torch.Tensor, max_length: int):
@@ -271,6 +271,7 @@ class Annotator(nn.Module):
         finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
         lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
         probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
+        loading_bar = tqdm(total=max_length, desc="Generating captions (greedy)")
         while True:
             generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)[:, -1]
             generated_tokens = generated_tokens_distribution.argmax(dim=-1)
@@ -282,9 +283,11 @@ class Annotator(nn.Module):
             captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
             if max_length is not None and captions.shape[1] >= max_length:
                 break
+            loading_bar.update(1)
+        loading_bar.close()
         return captions, lengths, probabilities, finished
 
-    def annotate(self, images, max_length: int = 15, mode: Literal["greedy", "sample", "beam"] = "sample", top_k: Optional[int] = None):
+    def annotate(self, images, max_length: int = 15, mode: Literal["greedy", "sample", "beam"] = "greedy", top_k: Optional[int] = None):
         self.eval()
         batched = isinstance(images, list) or isinstance(images, tuple)
         with torch.no_grad():
