@@ -19,7 +19,8 @@ class Annotator(nn.Module):
             "cuda" if torch.cuda.is_available() else "cpu")
         self.embedding_dim = 768
         self.heads = 12
-        self.decoder_depth = 8
+        self.decoder_block_depth = 6
+        self.decoder_blocks = 3
         self.dropout = 0.1
 
         self.tokenizer = tiktoken.get_encoding("gpt2")
@@ -38,18 +39,20 @@ class Annotator(nn.Module):
         for param in self.img_embedding.parameters():
             param.requires_grad = False
 
-        self.causal = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=self.embedding_dim,
-                nhead=self.heads,
-                dim_feedforward=self.embedding_dim * 4,
-                dropout=self.dropout,
-                batch_first=True,
-                activation="gelu"),
-            num_layers=self.decoder_depth,
-            enable_nested_tensor=True,
-            norm=nn.LayerNorm(self.embedding_dim)
-        )
+        self.causal = nn.ModuleList()
+        for _ in range(self.decoder_blocks):
+            self.causal.append(nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=self.embedding_dim,
+                    nhead=self.heads,
+                    dim_feedforward=self.embedding_dim * 2,
+                    dropout=self.dropout,
+                    batch_first=True,
+                    activation="gelu"),
+                num_layers=self.decoder_block_depth,
+                enable_nested_tensor=True,
+                norm=nn.LayerNorm(self.embedding_dim)
+            ))
 
         self.deembedding = nn.Sequential(
             nn.Dropout(self.dropout),
@@ -70,9 +73,11 @@ class Annotator(nn.Module):
         tgt_mask[:image_embeddings.shape[1], :image_embeddings.shape[1]] = 0
         caption_embeddings = self.positional_encoding(caption_embeddings)
         input_sequence = torch.cat([image_embeddings, caption_embeddings], dim=1)
+        output_sequence = input_sequence
 
-        output_sequence = self.causal(
-            input_sequence, mask=tgt_mask)
+        for causal in self.causal:
+            output_sequence = causal(output_sequence, mask=tgt_mask) + output_sequence
+            output_sequence = nn.functional.layer_norm(output_sequence, output_sequence.shape[1:])
         
         output_sequence = output_sequence[:, image_embeddings.shape[1]:, :]
         output_sequence = self.deembedding(output_sequence)
