@@ -1,6 +1,6 @@
 # CVProject
 
-![Model graph](graph.svg)
+![Model graph](graph_rendered.svg)
 
 The image encoder is a pre-trained facebook/DINOv2-base[^1] model, that is capable of encoding images into a 768 dimensional vector sequence.
 
