@@ -186,11 +186,19 @@ class Annotator(nn.Module):
             path, map_location=annotator.device, weights_only=True))
         return annotator
 
-    def _beam_search(self, image_embeddings: torch.Tensor, max_length: int, beam_size: int):
+    def _beam_search(self, image_embeddings: torch.Tensor, max_length: int, beam_size: int, conditioning: Optional[str]):
         batch_size = image_embeddings.shape[0]
-        captions = torch.full((beam_size, batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        if conditioning is not None:
+            conditioning = self.tokenizer.encode(conditioning)
+            captions = torch.full((beam_size, batch_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+            captions[:, :, 1:] = torch.tensor(conditioning, device=self.device).view(1, 1, -1)
+        else:
+            captions = torch.full((beam_size, batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
         finished = torch.full((beam_size, batch_size), False, dtype=torch.bool, device=self.device)
-        lengths = torch.full((beam_size, batch_size), 1, dtype=torch.long, device=self.device)
+        if conditioning is not None:
+            lengths = torch.full((beam_size, batch_size), len(conditioning), dtype=torch.long, device=self.device)
+        else:
+            lengths = torch.full((beam_size, batch_size), 1, dtype=torch.long, device=self.device)
         probabilities = torch.full((beam_size, batch_size), 1.0, dtype=torch.float32, device=self.device)
         loading_bar = tqdm(total=max_length, desc="Generating captions (beam)")
         while True:
@@ -231,11 +239,19 @@ class Annotator(nn.Module):
         best_beam = captions[best_beam_for_batch_idx, torch.arange(batch_size), :]
         return best_beam, lengths[best_beam_for_batch_idx, torch.arange(batch_size)], probabilities[best_beam_for_batch_idx, torch.arange(batch_size)], finished[best_beam_for_batch_idx, torch.arange(batch_size)]
     
-    def _sample_search(self, image_embeddings: torch.Tensor, max_length: int, top_k: Optional[int]):
+    def _sample_search(self, image_embeddings: torch.Tensor, max_length: int, top_k: Optional[int], conditioning: Optional[str]):
         batch_size = image_embeddings.shape[0]
-        captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        if conditioning is not None:
+            conditioning = self.tokenizer.encode(conditioning)
+            captions = torch.full((batch_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+            captions[:, 1:] = torch.tensor(conditioning, device=self.device).view(1, -1)
+        else:
+            captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
         finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
-        lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
+        if conditioning is not None:
+            lengths = torch.full((batch_size,), len(conditioning), dtype=torch.long, device=self.device)
+        else:
+            lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
         probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
         loading_bar = tqdm(total=max_length, desc="Generating captions (sample)")
         while True:
@@ -265,11 +281,19 @@ class Annotator(nn.Module):
         loading_bar.close()
         return captions, lengths, probabilities, finished
         
-    def _greedy_search(self, image_embeddings: torch.Tensor, max_length: int):
+    def _greedy_search(self, image_embeddings: torch.Tensor, max_length: int, conditioning: Optional[str]):
         batch_size = image_embeddings.shape[0]
-        captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        if conditioning is not None:
+            conditioning = self.tokenizer.encode(conditioning)
+            captions = torch.full((batch_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+            captions[:, 1:] = torch.tensor(conditioning, device=self.device).view(1, -1)
+        else:
+            captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
         finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
-        lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
+        if conditioning is not None:
+            lengths = torch.full((batch_size,), len(conditioning), dtype=torch.long, device=self.device)
+        else:
+            lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
         probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
         loading_bar = tqdm(total=max_length, desc="Generating captions (greedy)")
         while True:
@@ -287,7 +311,7 @@ class Annotator(nn.Module):
         loading_bar.close()
         return captions, lengths, probabilities, finished
 
-    def annotate(self, images, max_length: int = 15, mode: Literal["greedy", "sample", "beam"] = "greedy", top_k: Optional[int] = None):
+    def annotate(self, images, max_length: int = 15, mode: Literal["greedy", "sample", "beam"] = "greedy", top_k: Optional[int] = None, conditioning: Optional[str] = None):
         self.eval()
         batched = isinstance(images, list) or isinstance(images, tuple)
         with torch.no_grad():
@@ -297,11 +321,11 @@ class Annotator(nn.Module):
 
             match mode:
                 case "greedy":
-                    captions, lengths, probabilities, finished = self._greedy_search(image_embeddings, max_length)
+                    captions, lengths, probabilities, finished = self._greedy_search(image_embeddings, max_length, conditioning)
                 case "sample":
-                    captions, lengths, probabilities, finished = self._sample_search(image_embeddings, max_length, top_k)
+                    captions, lengths, probabilities, finished = self._sample_search(image_embeddings, max_length, top_k, conditioning)
                 case "beam":
-                    captions, lengths, probabilities, finished = self._beam_search(image_embeddings, max_length, top_k)
+                    captions, lengths, probabilities, finished = self._beam_search(image_embeddings, max_length, top_k, conditioning)
                 
         outputs = []
         for i in range(captions.shape[0]):
