@@ -1,4 +1,3 @@
-import os
 from typing import Literal, Optional
 import torch
 from torch import nn
