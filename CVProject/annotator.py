@@ -1,9 +1,14 @@
+import os
+import pickle
 from typing import Literal, Optional
+import numpy as np
+import sklearn.decomposition
 import torch
 from torch import nn
 import tiktoken
 from tqdm.auto import tqdm
 import transformers
+import sklearn
 
 from CVProject.dataset import TextImageDataset
 from CVProject.pos_enc import PositionalEncoding
@@ -60,6 +65,27 @@ class Annotator(nn.Module):
         img_inputs = self.img_processor(images, return_tensors="pt").to(self.device)
         image_embeddings = self.img_embedding(**img_inputs).last_hidden_state
         return image_embeddings
+    
+    def image_embedding_to_pca(self, image_embedding: torch.Tensor):
+        if len(image_embedding.shape) == 2:
+            image_embedding = image_embedding.unsqueeze(0)
+        assert len(image_embedding.shape) == 3, f"Expected 3D tensor of batched embeddings, got {image_embedding.shape}"
+        batch_size = image_embedding.shape[0]
+        image_embedding = image_embedding[:, 1:, :]
+        edge_square = image_embedding.shape[1]
+        feature_size = image_embedding.shape[2]
+        edge = int(edge_square ** 0.5)
+        assert edge ** 2 == edge_square, f"Expected square image embeddings, got {edge_square}"
+        pca = [sklearn.decomposition.PCA(n_components=3)] * batch_size
+        ret = []
+        image_embedding = image_embedding.cpu().numpy()
+        for i in range(batch_size):
+            pca[i].fit(image_embedding[i])
+            pca_img = pca[i].transform(image_embedding[i]).reshape(edge, edge, 3)
+            pca_img = (pca_img - pca_img.min()) / (pca_img.max() - pca_img.min())
+            ret.append(pca_img)
+        return ret
+
 
     def forward_with_embeddings(self, generated_caption, image_embeddings):
         caption_embeddings: torch.Tensor = self.embedding(generated_caption)

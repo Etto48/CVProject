@@ -16,7 +16,6 @@ class TextImageDataset(Dataset):
         assert 'image_path' in df.columns
         self.df = df
         self.tokenizer = tiktoken.get_encoding("gpt2")
-        self.target_size = 224
     
     @staticmethod
     def load(captions_path: str, images_path: str):
@@ -47,13 +46,8 @@ class TextImageDataset(Dataset):
 
     def _load_image(self, image_path: str):
         image = torchvision.io.decode_image(torchvision.io.read_file(image_path))
-        # image = torchvision.transforms.functional.resize(
-        #     image, 
-        #     (self.target_size, self.target_size), 
-        #     torchvision.transforms.InterpolationMode.BILINEAR)
         if image.shape[0] == 1:
             image = image.repeat(3, 1, 1)
-        # image = (image.to(torch.float) - 127.5) / 127.5
         return image
     
     def __getitem__(self, idx):
@@ -71,7 +65,6 @@ class TextImageDataset(Dataset):
         images, captions, plaintext_caption = zip(*batch)
         lengths = torch.tensor([len(c) for c in captions])
         captions = torch.nn.utils.rnn.pad_sequence(captions, batch_first=True, padding_value=0)
-        # images = torch.stack(images)
         return images, captions, lengths, plaintext_caption
 
 if __name__ == "__main__":
@@ -80,7 +73,7 @@ if __name__ == "__main__":
     for i, item in enumerate(dataset):
         plt.subplot(l, l, i + 1)
         plt.imshow((item[0].permute(1, 2, 0) + 1) / 2)
-        plt.title(f"{dataset.tokenizer.decode(item[1].numpy())}\n{dataset.tokenizer.decode([item[2].item()])}")
+        plt.title(f"{dataset.tokenizer.decode(item[1].cpu().numpy())}\n{dataset.tokenizer.decode([item[2].item()])}")
         plt.axis("off")
         if i == l * l - 1:
             break

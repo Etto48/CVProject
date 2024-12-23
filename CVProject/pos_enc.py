@@ -28,7 +28,7 @@ if __name__ == "__main__":
     x = torch.zeros(1, 512, 128)
     y = pe(x)
     plt.title("Positional Encoding")
-    plt.imshow(y[0].T.detach().numpy())
+    plt.imshow(y[0].T.detach().cpu().numpy())
     plt.colorbar()
     plt.xlabel("Time-step")
     plt.ylabel("Feature")
