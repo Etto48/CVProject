@@ -1,5 +1,5 @@
 import os
-import pickle
+import requests
 from typing import Literal, Optional
 import numpy as np
 import sklearn.decomposition
@@ -60,6 +60,24 @@ class Annotator(nn.Module):
             nn.Linear(self.embedding_dim, self.tokenizer.max_token_value + 1)
         )
         self.to(self.device)
+    
+    @staticmethod
+    def from_pretrained():
+        original_link = "https://drive.google.com/file/d/1upg85nlS-7uOWKLhDpyCkuumVls-Y_s1/view?usp=sharing"
+        file_id = original_link.split("/")[-2]
+        href = f"https://drive.google.com/uc?export=download&id={file_id}"
+        file_stream = requests.get(href, stream=True)
+        file_stream.raise_for_status()
+        file_size = int(file_stream.headers["Content-Length"])
+        os.makedirs("data", exist_ok=True)
+        if not os.path.exists("data/annotator.pt") or os.path.getsize("data/annotator.pt") != file_size:
+            with open("data/annotator.pt", "wb") as f:
+                with tqdm(total=file_size, desc="Downloading model weights") as pbar:
+                    for chunk in file_stream.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                        pbar.update(len(chunk))
+        annotator = Annotator.load("data/annotator.pt")
+        return annotator
 
     def encode_images(self, images):
         img_inputs = self.img_processor(images, return_tensors="pt").to(self.device)
