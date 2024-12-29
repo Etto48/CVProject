@@ -63,16 +63,14 @@ class Annotator(nn.Module):
     
     @staticmethod
     def from_pretrained():
-        original_link = "https://drive.google.com/file/d/1H-EiI3wb2CA_Lcj_b5_f5qDXh50f0rKh/view?usp=sharing"
-        file_id = original_link.split("/")[-2]
-        api_link = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key=AIzaSyDVCNpmfKmJ0gPeyZ8YWMca9ZOKz0CWdgs"
-        file_stream = requests.get(api_link, stream=True)
+        url = "https://huggingface.co/Etto48/CVProject/resolve/main/data/annotator.pt"
+        file_stream = requests.get(url, stream=True)
         file_stream.raise_for_status()
         file_size = int(file_stream.headers["Content-Length"])
         os.makedirs("data", exist_ok=True)
         if not os.path.exists("data/annotator.pt"):
             with open("data/annotator.pt", "wb") as f:
-                with tqdm(total=file_size, desc="Downloading model weights") as pbar:
+                with tqdm(total=file_size, desc="Downloading model weights", unit="B", unit_scale=True) as pbar:
                     for chunk in file_stream.iter_content(chunk_size=8192):
                         f.write(chunk)
                         pbar.update(len(chunk))
