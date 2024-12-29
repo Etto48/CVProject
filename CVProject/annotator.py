@@ -110,7 +110,7 @@ class Annotator(nn.Module):
             pca_img = pca.transform(image_embedding[i]).reshape(edge, edge, 3)
             pca_img = (pca_img - pca_img.min()) / (pca_img.max() - pca_img.min())
             ret.append(pca_img)
-            pca_img_local = pca_local[i].transform(image_embedding[i].cpu().numpy()).reshape(edge, edge, 3)
+            pca_img_local = pca_local[i].transform(image_embedding[i]).reshape(edge, edge, 3)
             pca_img_local = (pca_img_local - pca_img_local.min()) / (pca_img_local.max() - pca_img_local.min())
             ret_local.append(pca_img_local)
         return ret, ret_local
