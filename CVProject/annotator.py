@@ -88,7 +88,8 @@ class Annotator(nn.Module):
         image_embeddings = self.img_embedding(**img_inputs).last_hidden_state
         return image_embeddings
     
-    def image_embedding_to_pca(self, image_embedding: torch.Tensor):
+    @staticmethod
+    def image_embedding_to_pca(image_embedding: torch.Tensor):
         if len(image_embedding.shape) == 2:
             image_embedding = image_embedding.unsqueeze(0)
         assert len(image_embedding.shape) == 3, f"Expected 3D tensor of batched embeddings, got {image_embedding.shape}"
@@ -98,16 +99,21 @@ class Annotator(nn.Module):
         feature_size = image_embedding.shape[2]
         edge = int(edge_square ** 0.5)
         assert edge ** 2 == edge_square, f"Expected square image embeddings, got {edge_square}"
-        pca = [sklearn.decomposition.PCA(n_components=3)] * batch_size
+        pca_local = [sklearn.decomposition.PCA(n_components=3)] * batch_size
+        pca = sklearn.decomposition.PCA(n_components=3)
+        pca.fit(image_embedding.reshape(batch_size * edge_square, feature_size).cpu().numpy())
+        ret_local = []
         ret = []
         image_embedding = image_embedding.cpu().numpy()
         for i in range(batch_size):
-            pca[i].fit(image_embedding[i])
-            pca_img = pca[i].transform(image_embedding[i]).reshape(edge, edge, 3)
+            pca_local[i].fit(image_embedding[i])
+            pca_img = pca.transform(image_embedding[i]).reshape(edge, edge, 3)
             pca_img = (pca_img - pca_img.min()) / (pca_img.max() - pca_img.min())
             ret.append(pca_img)
-        return ret
-
+            pca_img_local = pca_local[i].transform(image_embedding[i].cpu().numpy()).reshape(edge, edge, 3)
+            pca_img_local = (pca_img_local - pca_img_local.min()) / (pca_img_local.max() - pca_img_local.min())
+            ret_local.append(pca_img_local)
+        return ret, ret_local
 
     def forward_with_embeddings(self, generated_caption, image_embeddings):
         caption_embeddings: torch.Tensor = self.embedding(generated_caption)
