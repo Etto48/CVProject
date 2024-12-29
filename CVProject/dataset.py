@@ -89,7 +89,7 @@ class TextImageDataset(Dataset):
 
         # Extracting annotations_trainval2017.zip
         os.makedirs(f"{coco_path}/annotations_trainval2017", exist_ok=True)
-        if not os.path.exists(f"{coco_path}/annotations_trainval2017"):
+        if not os.path.exists(f"{coco_path}/annotations_trainval2017/annotations"):
             with zipfile.ZipFile(f"{coco_path}/annotations_trainval2017.zip", "r") as zip_ref:
                 zip_ref.extractall(f"{coco_path}/annotations_trainval2017")
 
