@@ -3,9 +3,10 @@ import torch
 from torch import nn
 
 class PositionalEncoding(nn.Module):
-    def __init__(self):
+    def __init__(self, dropout=0.1):
         super().__init__()
         self.pe = None
+        self.dropout = nn.Dropout(dropout)
 
     def set_pe(self, t, d, device):
         position = torch.arange(t, device=device).view(1, -1, 1)
@@ -20,7 +21,7 @@ class PositionalEncoding(nn.Module):
             self.set_pe(t, d, x.device)
 
         x = x + self.pe[:, :t, :]
-        return x
+        return self.dropout(x)
     
 if __name__ == "__main__":
     import matplotlib.pyplot as plt

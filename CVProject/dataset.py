@@ -1,13 +1,14 @@
 import json
 import os
+import requests
 import tiktoken
 import torch
-from torch.utils.data import Dataset
 import pandas as pd
+import zipfile
 import torchvision
 import torchvision.transforms.functional
+from torch.utils.data import Dataset
 from tqdm.auto import tqdm
-import numpy as np
 from matplotlib import pyplot as plt
 
 class TextImageDataset(Dataset):
@@ -35,12 +36,67 @@ class TextImageDataset(Dataset):
     
     @staticmethod
     def load_train():
-        return TextImageDataset.load("/home/ettore/Downloads/COCO/annotations_trainval2017/annotations/captions_train2017.json", "/home/ettore/Downloads/COCO/train2017")
+        return TextImageDataset.load(os.path.expanduser("~/Downloads/COCO/annotations_trainval2017/annotations/captions_train2017.json"), os.path.expanduser("~/Downloads/COCO/train2017"))
     
     @staticmethod
     def load_valid():
-        return TextImageDataset.load("/home/ettore/Downloads/COCO/annotations_trainval2017/annotations/captions_val2017.json", "/home/ettore/Downloads/COCO/val2017")
+        return TextImageDataset.load(os.path.expanduser("~/Downloads/COCO/annotations_trainval2017/annotations/captions_val2017.json"), os.path.expanduser("~/Downloads/COCO/val2017"))
     
+    @staticmethod
+    def download(valid: bool = False):
+        if valid:
+            imgs = "http://images.cocodataset.org/zips/val2017.zip"
+        else:
+            imgs = "http://images.cocodataset.org/zips/train2017.zip"
+        annotations = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+        coco_path = os.path.expanduser("~/Downloads/COCO")
+        os.makedirs(coco_path, exist_ok=True)
+
+        # Downloading imgs2017.zip
+        imgs_path = f"{coco_path}/train2017.zip" if not valid else f"{coco_path}/val2017.zip"
+        if not os.path.exists(imgs_path):
+            val_imgs_stream = requests.get(imgs, stream=True)
+            val_size = int(val_imgs_stream.headers.get("Content-Length", 0))
+            with open(imgs_path, "wb") as f:
+                with tqdm(
+                    total=val_size, 
+                    unit="B", 
+                    unit_scale=True, 
+                    desc="Downloading images") as bar:
+                    for chunk in val_imgs_stream.iter_content(chunk_size=4096):
+                        f.write(chunk)
+                        bar.update(len(chunk))
+        
+        # Downloading annotations_trainval2017.zip
+        if not os.path.exists(f"{coco_path}/annotations_trainval2017.zip"):
+            annotations_stream = requests.get(annotations, stream=True)
+            annotations_size = int(annotations_stream.headers.get("Content-Length", 0))
+            with open(f"{coco_path}/annotations_trainval2017.zip", "wb") as f:
+                with tqdm(
+                    total=annotations_size, 
+                    unit="B", 
+                    unit_scale=True, 
+                    desc="Downloading annotations") as bar:
+                    for chunk in annotations_stream.iter_content(chunk_size=4096):
+                        f.write(chunk)
+                        bar.update(len(chunk))
+        
+        # Extracting val2017.zip
+        imgs_path = imgs_path[:-4] # remove .zip
+        if not os.path.exists(imgs_path):
+            with zipfile.ZipFile(f"{imgs_path}.zip", "r") as zip_ref:
+                zip_ref.extractall(coco_path)
+
+        # Extracting annotations_trainval2017.zip
+        if not os.path.exists(f"{coco_path}/annotations_trainval2017"):
+            with zipfile.ZipFile(f"{coco_path}/annotations_trainval2017.zip", "r") as zip_ref:
+                zip_ref.extractall(coco_path)
+
+        if valid:
+            return TextImageDataset.load_valid()
+        else:
+            return TextImageDataset.load_train()
+
     def __len__(self):  
         return len(self.df)
 

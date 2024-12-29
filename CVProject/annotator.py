@@ -18,8 +18,8 @@ class Annotator(nn.Module):
         super().__init__()
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
-        self.embedding_dim = 768
-        self.heads = 12
+        self.embedding_dim = 1024
+        self.heads = 16
         self.decoder_block_depth = 6
         self.decoder_blocks = 3
         self.dropout = 0.1
@@ -32,10 +32,10 @@ class Annotator(nn.Module):
             ),
         )
 
-        self.positional_encoding = PositionalEncoding()
+        self.positional_encoding = PositionalEncoding(self.dropout)
        
-        self.img_processor = transformers.AutoImageProcessor.from_pretrained('facebook/dinov2-base')
-        self.img_embedding = transformers.AutoModel.from_pretrained('facebook/dinov2-base')
+        self.img_processor = transformers.AutoImageProcessor.from_pretrained('facebook/dinov2-large')
+        self.img_embedding = transformers.AutoModel.from_pretrained('facebook/dinov2-large')
 
         for param in self.img_embedding.parameters():
             param.requires_grad = False
@@ -46,7 +46,7 @@ class Annotator(nn.Module):
                 nn.TransformerEncoderLayer(
                     d_model=self.embedding_dim,
                     nhead=self.heads,
-                    dim_feedforward=self.embedding_dim * 2,
+                    dim_feedforward=self.embedding_dim * 4,
                     dropout=self.dropout,
                     batch_first=True,
                     activation="gelu"),
@@ -63,19 +63,23 @@ class Annotator(nn.Module):
     
     @staticmethod
     def from_pretrained():
-        original_link = "https://drive.google.com/file/d/1upg85nlS-7uOWKLhDpyCkuumVls-Y_s1/view?usp=sharing"
+        original_link = "https://drive.google.com/file/d/1H-EiI3wb2CA_Lcj_b5_f5qDXh50f0rKh/view?usp=sharing"
         file_id = original_link.split("/")[-2]
-        href = f"https://drive.google.com/uc?export=download&id={file_id}"
-        file_stream = requests.get(href, stream=True)
+        api_link = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key=AIzaSyDVCNpmfKmJ0gPeyZ8YWMca9ZOKz0CWdgs"
+        file_stream = requests.get(api_link, stream=True)
         file_stream.raise_for_status()
         file_size = int(file_stream.headers["Content-Length"])
         os.makedirs("data", exist_ok=True)
-        if not os.path.exists("data/annotator.pt") or os.path.getsize("data/annotator.pt") != file_size:
+        if not os.path.exists("data/annotator.pt"):
             with open("data/annotator.pt", "wb") as f:
                 with tqdm(total=file_size, desc="Downloading model weights") as pbar:
                     for chunk in file_stream.iter_content(chunk_size=8192):
                         f.write(chunk)
                         pbar.update(len(chunk))
+        else:
+            if os.path.getsize("data/annotator.pt") != file_size:
+                print("File size mismatch, maybe the file is an old version or a partial download. Please remove the file and try again.")
+                return None
         annotator = Annotator.load("data/annotator.pt")
         return annotator
 
@@ -136,8 +140,9 @@ class Annotator(nn.Module):
         return loss
 
     def fit(self, train: TextImageDataset, valid: TextImageDataset, epochs: int):
-        optim = torch.optim.Adam(self.parameters(), lr=1e-4)
-        history = {"train": [], "valid": []}
+        optim = torch.optim.Adam(self.parameters(), lr=5e-5)
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, patience=5, factor=0.5, threshold=0.01)
+        history = {"train": [], "valid": [], "lr": []}
         bs = 8
         train_loader = torch.utils.data.DataLoader(
             dataset=train, batch_size=bs, collate_fn=TextImageDataset.collate_fn,
@@ -148,7 +153,7 @@ class Annotator(nn.Module):
 
         best_loss = float("inf")
         best_model = None
-        patience = 4
+        patience = 10
         epochs_without_improvement = 0
         threshold = 0.01
 
@@ -179,7 +184,7 @@ class Annotator(nn.Module):
                 correct_predictions += (next_tokens[mask] == expected_output[mask]).sum().item()
                 total_predictions += next_tokens.numel()
                 batches.set_postfix(
-                    loss=avg_loss / (i + 1), accuracy=f"{correct_predictions / total_predictions:0.2%}")
+                    loss=avg_loss / (i + 1), accuracy=f"{correct_predictions / total_predictions:0.2%}", lr=optim.param_groups[0]["lr"])
             avg_loss /= i + 1
             history["train"].append(avg_loss)
             batches = tqdm(
@@ -205,9 +210,11 @@ class Annotator(nn.Module):
                     correct_predictions += (next_tokens[mask] == expected_output[mask]).sum().item()
                     total_predictions += next_tokens.numel()
                     batches.set_postfix(
-                        loss=avg_loss / (i + 1), accuracy=f"{correct_predictions / total_predictions:0.2%}")
+                        loss=avg_loss / (i + 1), accuracy=f"{correct_predictions / total_predictions:0.2%}", lr=optim.param_groups[0]["lr"])
             avg_loss /= i + 1
             history["valid"].append(avg_loss)
+            lr_scheduler.step(loss)
+            history["lr"].append(optim.param_groups[0]["lr"])
             if avg_loss < best_loss - threshold:
                 best_loss = avg_loss
                 best_model = self.state_dict()
@@ -229,6 +236,78 @@ class Annotator(nn.Module):
             path, map_location=annotator.device, weights_only=True))
         return annotator
 
+    def _greedy_search(self, image_embeddings: torch.Tensor, max_length: int, conditioning: Optional[str]):
+        batch_size = image_embeddings.shape[0]
+        if conditioning is not None:
+            conditioning = self.tokenizer.encode(conditioning)
+            captions = torch.full((batch_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+            captions[:, 1:] = torch.tensor(conditioning, device=self.device).view(1, -1)
+        else:
+            captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
+        if conditioning is not None:
+            lengths = torch.full((batch_size,), len(conditioning), dtype=torch.long, device=self.device)
+        else:
+            lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
+        probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
+        loading_bar = tqdm(total=max_length, desc="Generating captions (greedy)")
+        while True:
+            generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)[:, -1]
+            generated_tokens = generated_tokens_distribution.argmax(dim=-1)
+            probabilities *= torch.softmax(generated_tokens_distribution, dim=-1)[torch.arange(batch_size), generated_tokens]
+            finished |= (generated_tokens == self.tokenizer.max_token_value)
+            if finished.all():
+                break
+            lengths += ~finished
+            captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
+            if max_length is not None and captions.shape[1] >= max_length:
+                break
+            loading_bar.update(1)
+        loading_bar.close()
+        return captions, lengths, probabilities, finished
+
+    def _sample_search(self, image_embeddings: torch.Tensor, max_length: int, top_k: Optional[int], conditioning: Optional[str]):
+        batch_size = image_embeddings.shape[0]
+        if conditioning is not None:
+            conditioning = self.tokenizer.encode(conditioning)
+            captions = torch.full((batch_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+            captions[:, 1:] = torch.tensor(conditioning, device=self.device).view(1, -1)
+        else:
+            captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
+        if conditioning is not None:
+            lengths = torch.full((batch_size,), len(conditioning), dtype=torch.long, device=self.device)
+        else:
+            lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
+        probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
+        loading_bar = tqdm(total=max_length, desc="Generating captions (sample)")
+        while True:
+            generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)[:, -1]
+            match top_k:
+                case None:
+                    generated_tokens = torch.multinomial(
+                        torch.softmax(generated_tokens_distribution, dim=-1), 1)\
+                        .squeeze(1)
+                case _:
+                    top_k_values, top_k_indices = torch.topk(
+                        generated_tokens_distribution, top_k, dim=-1)
+                    top_k_probabilities = torch.softmax(top_k_values, dim=-1)
+                    generated_tokens = torch.multinomial(
+                        top_k_probabilities, 1)\
+                        .squeeze(1)
+                    generated_tokens = top_k_indices[torch.arange(batch_size), generated_tokens]
+            probabilities *= torch.softmax(generated_tokens_distribution, dim=-1)[torch.arange(batch_size), generated_tokens]
+            finished |= (generated_tokens == self.tokenizer.max_token_value)
+            if finished.all():
+                break
+            lengths += ~finished
+            captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
+            if max_length is not None and captions.shape[1] >= max_length:
+                break
+            loading_bar.update(1)
+        loading_bar.close()
+        return captions, lengths, probabilities, finished
+        
     def _beam_search(self, image_embeddings: torch.Tensor, max_length: int, beam_size: int, conditioning: Optional[str]):
         batch_size = image_embeddings.shape[0]
         if conditioning is not None:
@@ -282,78 +361,6 @@ class Annotator(nn.Module):
         best_beam = captions[best_beam_for_batch_idx, torch.arange(batch_size), :]
         return best_beam, lengths[best_beam_for_batch_idx, torch.arange(batch_size)], probabilities[best_beam_for_batch_idx, torch.arange(batch_size)], finished[best_beam_for_batch_idx, torch.arange(batch_size)]
     
-    def _sample_search(self, image_embeddings: torch.Tensor, max_length: int, top_k: Optional[int], conditioning: Optional[str]):
-        batch_size = image_embeddings.shape[0]
-        if conditioning is not None:
-            conditioning = self.tokenizer.encode(conditioning)
-            captions = torch.full((batch_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
-            captions[:, 1:] = torch.tensor(conditioning, device=self.device).view(1, -1)
-        else:
-            captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
-        finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
-        if conditioning is not None:
-            lengths = torch.full((batch_size,), len(conditioning), dtype=torch.long, device=self.device)
-        else:
-            lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
-        probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
-        loading_bar = tqdm(total=max_length, desc="Generating captions (sample)")
-        while True:
-            generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)[:, -1]
-            match top_k:
-                case None:
-                    generated_tokens = torch.multinomial(
-                        torch.softmax(generated_tokens_distribution, dim=-1), 1)\
-                        .squeeze(1)
-                case _:
-                    top_k_values, top_k_indices = torch.topk(
-                        generated_tokens_distribution, top_k, dim=-1)
-                    top_k_probabilities = torch.softmax(top_k_values, dim=-1)
-                    generated_tokens = torch.multinomial(
-                        top_k_probabilities, 1)\
-                        .squeeze(1)
-                    generated_tokens = top_k_indices[torch.arange(batch_size), generated_tokens]
-            probabilities *= torch.softmax(generated_tokens_distribution, dim=-1)[torch.arange(batch_size), generated_tokens]
-            finished |= (generated_tokens == self.tokenizer.max_token_value)
-            if finished.all():
-                break
-            lengths += ~finished
-            captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
-            if max_length is not None and captions.shape[1] >= max_length:
-                break
-            loading_bar.update(1)
-        loading_bar.close()
-        return captions, lengths, probabilities, finished
-        
-    def _greedy_search(self, image_embeddings: torch.Tensor, max_length: int, conditioning: Optional[str]):
-        batch_size = image_embeddings.shape[0]
-        if conditioning is not None:
-            conditioning = self.tokenizer.encode(conditioning)
-            captions = torch.full((batch_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
-            captions[:, 1:] = torch.tensor(conditioning, device=self.device).view(1, -1)
-        else:
-            captions = torch.full((batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
-        finished = torch.full((batch_size,), False, dtype=torch.bool, device=self.device)
-        if conditioning is not None:
-            lengths = torch.full((batch_size,), len(conditioning), dtype=torch.long, device=self.device)
-        else:
-            lengths = torch.full((batch_size,), 1, dtype=torch.long, device=self.device)
-        probabilities = torch.full((batch_size,), 1.0, dtype=torch.float32, device=self.device)
-        loading_bar = tqdm(total=max_length, desc="Generating captions (greedy)")
-        while True:
-            generated_tokens_distribution = self.forward_with_embeddings(captions, image_embeddings)[:, -1]
-            generated_tokens = generated_tokens_distribution.argmax(dim=-1)
-            probabilities *= torch.softmax(generated_tokens_distribution, dim=-1)[torch.arange(batch_size), generated_tokens]
-            finished |= (generated_tokens == self.tokenizer.max_token_value)
-            if finished.all():
-                break
-            lengths += ~finished
-            captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
-            if max_length is not None and captions.shape[1] >= max_length:
-                break
-            loading_bar.update(1)
-        loading_bar.close()
-        return captions, lengths, probabilities, finished
-
     def annotate(self, images, max_length: int = 15, mode: Literal["greedy", "sample", "beam"] = "greedy", top_k: Optional[int] = None, conditioning: Optional[str] = None):
         self.eval()
         batched = isinstance(images, list) or isinstance(images, tuple)
@@ -392,9 +399,16 @@ if __name__ == "__main__":
     history = annotator.fit(train, valid=valid, epochs=100)
     annotator.save("data/annotator.pt")
     if history is not None:
+        plt.subplot(2, 1, 1)
         plt.plot(history["train"], label="Train")
         plt.plot(history["valid"], label="Valid")
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
+        plt.legend()
+        plt.subplot(2, 1, 2)
+        plt.yscale("log")
+        plt.plot(history["lr"], label="Learning rate")
+        plt.xlabel("Epoch")
+        plt.ylabel("Learning rate")
         plt.legend()
         plt.show()

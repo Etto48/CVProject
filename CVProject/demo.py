@@ -17,7 +17,7 @@ if __name__ == "__main__":
         dataset=valid, batch_size=l * l, collate_fn=TextImageDataset.collate_fn,
         sampler=torch.utils.data.RandomSampler(valid, replacement=True, num_samples=l * l))
     images, _, _, _ = next(iter(valid_loader))
-    captions, probabilities = annotator.annotate(images, mode="beam", top_k=5)
+    captions, probabilities = annotator.annotate(images, mode="beam", top_k=10)
     for i in range(l * l):
         plt.subplot(l, l, i + 1)
         plt.imshow(images[i].permute(1, 2, 0))
