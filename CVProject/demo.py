@@ -20,7 +20,7 @@ if __name__ == "__main__":
     captions_beam, beam_prob = annotator.annotate(images, mode="beam", top_k=10)
     captions_greedy, greedy_prob = annotator.annotate(images, mode="greedy")
     captions_sample, sample_prob = annotator.annotate(images, mode="sample", top_k=10)
-    plt.figure(figsize=(20, 15))
+    plt.figure(figsize=(25, 15))
     for i in range(l * l):
         plt.subplot(l, l, i + 1)
         plt.imshow(images[i].permute(1, 2, 0))
