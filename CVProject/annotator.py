@@ -63,7 +63,7 @@ class Annotator(nn.Module):
     
     @staticmethod
     def from_pretrained():
-        url = "https://huggingface.co/Etto48/CVProject/resolve/main/data/annotator.pt"
+        url = "https://huggingface.co/Etto48/CVProject/resolve/main/annotator.pt"
         file_stream = requests.get(url, stream=True)
         file_stream.raise_for_status()
         file_size = int(file_stream.headers["Content-Length"])
