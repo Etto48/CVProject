@@ -55,16 +55,14 @@ class TextImageDataset(Dataset):
         match split:
             case "valid":
                 imgs = "http://images.cocodataset.org/zips/val2017.zip"
-                imgs_path = f"{coco_path}/val2017"
             case "test":
                 imgs = "http://images.cocodataset.org/zips/test2017.zip"
-                imgs_path = f"{coco_path}/test2017"
             case "train":
                 imgs = "http://images.cocodataset.org/zips/train2017.zip"
-                imgs_path = f"{coco_path}/train2017"
             case _:
                 raise ValueError(f"Invalid split: {split}, must be one of 'train', 'valid', 'test'")
         annotations = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+        imgs_path = f"{coco_path}/{imgs.split("/")[-1]}"
 
         # Downloading imgs2017.zip
         if not os.path.exists(imgs_path):
