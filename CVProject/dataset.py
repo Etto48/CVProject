@@ -23,10 +23,10 @@ class TextImageDataset(Dataset):
     def load(captions_path: Optional[str], images_path: str):
         img_name_padding = 12
         
-        with open(captions_path, "r") as f:
-            captions_data = json.load(f)["annotations"]
         df_list = []
         if captions_path is not None:
+            with open(captions_path, "r") as f:
+                captions_data = json.load(f)["annotations"]
             for caption_data in tqdm(captions_data, desc="Loading dataset"):
                 image_id = caption_data["image_id"]
                 caption = caption_data["caption"]
@@ -62,9 +62,9 @@ class TextImageDataset(Dataset):
             case _:
                 raise ValueError(f"Invalid split: {split}, must be one of 'train', 'valid', 'test'")
         annotations = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
-        imgs_path = f"{coco_path}/{imgs.split("/")[-1]}"
+        imgs_path = f"{coco_path}/{imgs.split('/')[-1]}"
 
-        # Downloading imgs2017.zip
+        # Downloading imgs
         if not os.path.exists(imgs_path):
             val_imgs_stream = requests.get(imgs, stream=True)
             val_size = int(val_imgs_stream.headers.get("Content-Length", 0))
