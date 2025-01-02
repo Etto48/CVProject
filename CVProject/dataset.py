@@ -1,5 +1,6 @@
 import json
 import os
+from typing import Literal, Optional
 import requests
 import tiktoken
 import torch
@@ -19,18 +20,23 @@ class TextImageDataset(Dataset):
         self.tokenizer = tiktoken.get_encoding("gpt2")
     
     @staticmethod
-    def load(captions_path: str, images_path: str):
+    def load(captions_path: Optional[str], images_path: str):
         img_name_padding = 12
         
         with open(captions_path, "r") as f:
             captions_data = json.load(f)["annotations"]
         df_list = []
-        for caption_data in tqdm(captions_data, desc="Loading dataset"):
-            image_id = caption_data["image_id"]
-            caption = caption_data["caption"]
-            image_name = f"{str(image_id).zfill(img_name_padding)}.jpg"
-            image_path = os.path.join(images_path, image_name)
-            df_list.append({"caption": caption, "image_path": image_path})
+        if captions_path is not None:
+            for caption_data in tqdm(captions_data, desc="Loading dataset"):
+                image_id = caption_data["image_id"]
+                caption = caption_data["caption"]
+                image_name = f"{str(image_id).zfill(img_name_padding)}.jpg"
+                image_path = os.path.join(images_path, image_name)
+                df_list.append({"caption": caption, "image_path": image_path})
+        else:
+            for image_name in tqdm(os.listdir(images_path), desc="Loading dataset"):
+                image_path = os.path.join(images_path, image_name)
+                df_list.append({"caption": "", "image_path": image_path})
         df = pd.DataFrame.from_dict(df_list)
         return TextImageDataset(df)
     
@@ -43,17 +49,24 @@ class TextImageDataset(Dataset):
         return TextImageDataset.load(os.path.expanduser("~/Downloads/COCO/annotations_trainval2017/annotations/captions_val2017.json"), os.path.expanduser("~/Downloads/COCO/val2017"))
     
     @staticmethod
-    def download(valid: bool = False):
-        if valid:
-            imgs = "http://images.cocodataset.org/zips/val2017.zip"
-        else:
-            imgs = "http://images.cocodataset.org/zips/train2017.zip"
-        annotations = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+    def download(split: Literal["train", "valid", "test"]):
         coco_path = os.path.expanduser("~/Downloads/COCO")
         os.makedirs(coco_path, exist_ok=True)
+        match split:
+            case "valid":
+                imgs = "http://images.cocodataset.org/zips/val2017.zip"
+                imgs_path = f"{coco_path}/val2017"
+            case "test":
+                imgs = "http://images.cocodataset.org/zips/test2017.zip"
+                imgs_path = f"{coco_path}/test2017"
+            case "train":
+                imgs = "http://images.cocodataset.org/zips/train2017.zip"
+                imgs_path = f"{coco_path}/train2017"
+            case _:
+                raise ValueError(f"Invalid split: {split}, must be one of 'train', 'valid', 'test'")
+        annotations = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 
         # Downloading imgs2017.zip
-        imgs_path = f"{coco_path}/train2017.zip" if not valid else f"{coco_path}/val2017.zip"
         if not os.path.exists(imgs_path):
             val_imgs_stream = requests.get(imgs, stream=True)
             val_size = int(val_imgs_stream.headers.get("Content-Length", 0))
@@ -68,7 +81,7 @@ class TextImageDataset(Dataset):
                         bar.update(len(chunk))
         
         # Downloading annotations_trainval2017.zip
-        if not os.path.exists(f"{coco_path}/annotations_trainval2017.zip"):
+        if not os.path.exists(f"{coco_path}/annotations_trainval2017.zip") and split != "test":
             annotations_stream = requests.get(annotations, stream=True)
             annotations_size = int(annotations_stream.headers.get("Content-Length", 0))
             with open(f"{coco_path}/annotations_trainval2017.zip", "wb") as f:
@@ -81,22 +94,26 @@ class TextImageDataset(Dataset):
                         f.write(chunk)
                         bar.update(len(chunk))
         
-        # Extracting val2017.zip
+        # Extracting images
         imgs_path = imgs_path[:-4] # remove .zip
         if not os.path.exists(imgs_path):
             with zipfile.ZipFile(f"{imgs_path}.zip", "r") as zip_ref:
                 zip_ref.extractall(coco_path)
 
         # Extracting annotations_trainval2017.zip
-        os.makedirs(f"{coco_path}/annotations_trainval2017", exist_ok=True)
-        if not os.path.exists(f"{coco_path}/annotations_trainval2017/annotations"):
-            with zipfile.ZipFile(f"{coco_path}/annotations_trainval2017.zip", "r") as zip_ref:
-                zip_ref.extractall(f"{coco_path}/annotations_trainval2017")
+        if split != "test":
+            os.makedirs(f"{coco_path}/annotations_trainval2017", exist_ok=True)
+            if not os.path.exists(f"{coco_path}/annotations_trainval2017/annotations"):
+                with zipfile.ZipFile(f"{coco_path}/annotations_trainval2017.zip", "r") as zip_ref:
+                    zip_ref.extractall(f"{coco_path}/annotations_trainval2017")
 
-        if valid:
-            return TextImageDataset.load_valid()
-        else:
-            return TextImageDataset.load_train()
+        match split:
+            case "train":
+                return TextImageDataset.load_train()
+            case "valid":
+                return TextImageDataset.load_valid()
+            case "test":
+                return TextImageDataset.load(None, imgs_path)
 
     def __len__(self):  
         return len(self.df)

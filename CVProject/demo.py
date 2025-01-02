@@ -11,12 +11,12 @@ if __name__ == "__main__":
     except FileNotFoundError:
         print("Annotator pretrained weights not found at \"data/annotator.pt\"")
         exit(1)
-    valid = TextImageDataset.load_valid()
+    test_set = TextImageDataset.download("test")
     l = 3
-    valid_loader = torch.utils.data.DataLoader(
-        dataset=valid, batch_size=l * l, collate_fn=TextImageDataset.collate_fn,
-        sampler=torch.utils.data.RandomSampler(valid, replacement=True, num_samples=l * l))
-    images, _, _, _ = next(iter(valid_loader))
+    test_loader = torch.utils.data.DataLoader(
+        dataset=test_set, batch_size=l * l, collate_fn=TextImageDataset.collate_fn,
+        sampler=torch.utils.data.RandomSampler(test_set, replacement=True, num_samples=l * l))
+    images, _, _, _ = next(iter(test_loader))
     captions_beam, beam_prob = annotator.annotate(images, mode="beam", top_k=10)
     captions_greedy, greedy_prob = annotator.annotate(images, mode="greedy")
     captions_sample, sample_prob = annotator.annotate(images, mode="sample", top_k=10)
