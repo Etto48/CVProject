@@ -264,7 +264,7 @@ class Annotator(nn.Module):
                 break
             lengths += ~finished
             captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
-            if max_length is not None and captions.shape[1] >= max_length:
+            if max_length is not None and captions.shape[1] > max_length + 1:
                 break
             loading_bar.update(1)
         loading_bar.close()
@@ -306,7 +306,7 @@ class Annotator(nn.Module):
                 break
             lengths += ~finished
             captions = torch.cat([captions, generated_tokens.unsqueeze(1)], dim=1)
-            if max_length is not None and captions.shape[1] >= max_length:
+            if max_length is not None and captions.shape[1] > max_length + 1:
                 break
             loading_bar.update(1)
         loading_bar.close()
@@ -316,54 +316,78 @@ class Annotator(nn.Module):
         batch_size = image_embeddings.shape[0]
         if conditioning is not None:
             conditioning = self.tokenizer.encode(conditioning)
-            captions = torch.full((beam_size, batch_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
-            captions[:, :, 1:] = torch.tensor(conditioning, device=self.device).view(1, 1, -1)
+            captions = torch.full((batch_size, beam_size, len(conditioning) + 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+            captions[:, :, 1:] = torch.tensor(conditioning, device=self.device).view(1, 1, -1).repeat(batch_size, beam_size, 1)
         else:
-            captions = torch.full((beam_size, batch_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
-        finished = torch.full((beam_size, batch_size), False, dtype=torch.bool, device=self.device)
+            captions = torch.full((batch_size, beam_size, 1), self.tokenizer.max_token_value, dtype=torch.long, device=self.device)
+        finished = torch.full((batch_size, beam_size), False, dtype=torch.bool, device=self.device)
+        probabilities = torch.full((batch_size, beam_size), 1.0, dtype=torch.float32, device=self.device)
         if conditioning is not None:
-            lengths = torch.full((beam_size, batch_size), len(conditioning), dtype=torch.long, device=self.device)
+            lengths = torch.full((batch_size, beam_size), len(conditioning), dtype=torch.long, device=self.device)
         else:
-            lengths = torch.full((beam_size, batch_size), 1, dtype=torch.long, device=self.device)
-        probabilities = torch.full((beam_size, batch_size), 1.0, dtype=torch.float32, device=self.device)
+            lengths = torch.full((batch_size, beam_size), 1, dtype=torch.long, device=self.device)
         loading_bar = tqdm(total=max_length, desc="Generating captions (beam)")
+        first = True
         while True:
-            generated_tokens_distribution = \
-                self.forward_with_embeddings(captions.view(-1, captions.shape[-1]), image_embeddings.repeat(beam_size, 1, 1))[:, -1] \
-                    .view(beam_size, batch_size, -1)
-
-            # Select top k tokens for each beam
-            top_k_values_for_beam, top_k_indices_for_beam = torch.topk(
-                generated_tokens_distribution, beam_size, dim=-1)
-            
-            # Compute probabilities for each beam [beam, batch, beam]
-            top_k_probabilities_for_beam = torch.softmax(top_k_values_for_beam, dim=-1)
-            top_k_probabilities_for_beam *= probabilities.unsqueeze(-1) 
-
-            # Select top k beams 
-            # [beam*beam, batch]
-            top_k_squared_probabilities = top_k_probabilities_for_beam.permute(0, 2, 1).reshape(beam_size * beam_size, batch_size)
-            # [beam, batch]
-            top_k_probabilities, top_k_indices = torch.topk(
-                top_k_squared_probabilities, beam_size, dim=0)
-            
-            new_tokens = top_k_indices_for_beam.permute(0, 2, 1).reshape(beam_size * beam_size, batch_size)[top_k_indices, torch.arange(batch_size)]
-            probabilities = top_k_probabilities
-            new_finished = (new_tokens == self.tokenizer.max_token_value)
-            finished |= new_finished
-
+            if first:
+                first = False
+                generated_tokens_distribution = self.forward_with_embeddings(captions[:, 0, :], image_embeddings)[:, -1]
+                generated_tokens = torch.topk(generated_tokens_distribution, beam_size, dim=-1).indices
+                softmax = torch.softmax(generated_tokens_distribution, dim=-1)
+                probabilities = softmax[torch.arange(batch_size).view(batch_size, 1), generated_tokens]
+            else:
+                # batch and beam dimensions are collapsed into a single dimension for the forward pass
+                generated_tokens_distribution = self.forward_with_embeddings(
+                    captions.view(batch_size * beam_size, -1), 
+                    image_embeddings
+                        .view(batch_size, 1, image_embeddings.shape[-2], image_embeddings.shape[-1])
+                        .repeat(1, beam_size, 1, 1)
+                        .view(batch_size * beam_size, image_embeddings.shape[-2], image_embeddings.shape[-1])
+                    )
+                # take the last token distribution
+                generated_tokens_distribution = generated_tokens_distribution[:, -1]
+                # split back batch and beam dimensions
+                generated_tokens_distribution = generated_tokens_distribution.view(batch_size, beam_size, -1)
+                new_probabilities = probabilities.view(batch_size, beam_size, 1).repeat(1, 1, self.tokenizer.max_token_value + 1) * \
+                    torch.softmax(generated_tokens_distribution, dim=-1)
+                # collapse probabilities into a single dimension
+                new_probabilities = new_probabilities.view(batch_size, -1)
+                # select the top k most probable tokens among all beams
+                top_k_values, top_k_indices = torch.topk(new_probabilities, beam_size, dim=-1) # (B, beam_size * |V|)
+                # calculate the beam index and token index for each of the top k values
+                beam_indices = top_k_indices // (self.tokenizer.max_token_value + 1)
+                token_indices = top_k_indices % (self.tokenizer.max_token_value + 1)
+                # update the probabilities
+                old_probabilities = probabilities
+                probabilities = top_k_values
+                # update the captions
+                old_captions = captions
+                finished_mask = finished.view(batch_size, beam_size, 1).repeat(1, 1, captions.shape[2])
+                captions = captions[torch.arange(batch_size).view(batch_size, 1), beam_indices, :]
+                # restore the old captions and probabilities for finished beams that must not be updated
+                captions[finished_mask] = old_captions[finished_mask]
+                probabilities[finished] = old_probabilities[finished]
+                generated_tokens = token_indices
+            captions = torch.cat([captions, generated_tokens.view(batch_size, beam_size, 1)], dim=2)
+            finished = (captions[:, :, 1:] == self.tokenizer.max_token_value).any(dim=-1)
+            lengths = torch.full((batch_size, beam_size), captions.shape[2], dtype=torch.long, device=self.device)
+            for i in range(batch_size):
+                for j in range(beam_size):
+                    if finished[i, j]:
+                        lengths[i, j] = (captions[i, j, 1:] == self.tokenizer.max_token_value).nonzero()[0].item() + 1
             if finished.all():
                 break
-            lengths += ~finished
-            captions = torch.cat([captions.view(-1, batch_size, captions.shape[-1]), new_tokens.view(beam_size, batch_size, 1)], dim=2)
-            if max_length is not None and captions.shape[2] >= max_length:
+            if max_length is not None and captions.shape[2] > max_length + 1:
                 break
             loading_bar.update(1)
         loading_bar.close()
-        
-        best_beam_for_batch_idx = torch.argmax(probabilities, dim=0)
-        best_beam = captions[best_beam_for_batch_idx, torch.arange(batch_size), :]
-        return best_beam, lengths[best_beam_for_batch_idx, torch.arange(batch_size)], probabilities[best_beam_for_batch_idx, torch.arange(batch_size)], finished[best_beam_for_batch_idx, torch.arange(batch_size)]
+        best_beam_indices = probabilities.argmax(dim=-1)
+        best_beam = captions[torch.arange(batch_size), best_beam_indices]
+        lengths = lengths[torch.arange(batch_size), best_beam_indices]
+        probabilities = probabilities[torch.arange(batch_size), best_beam_indices]
+        finished = finished[torch.arange(batch_size), best_beam_indices]
+
+        return best_beam, lengths, probabilities, finished
     
     def annotate(self, images, max_length: int = 15, mode: Literal["greedy", "sample", "beam"] = "greedy", top_k: Optional[int] = None, conditioning: Optional[str] = None):
         self.eval()

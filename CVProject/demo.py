@@ -17,11 +17,16 @@ if __name__ == "__main__":
         dataset=valid, batch_size=l * l, collate_fn=TextImageDataset.collate_fn,
         sampler=torch.utils.data.RandomSampler(valid, replacement=True, num_samples=l * l))
     images, _, _, _ = next(iter(valid_loader))
-    captions, probabilities = annotator.annotate(images, mode="beam", top_k=10)
+    captions_beam, beam_prob = annotator.annotate(images, mode="beam", top_k=10)
+    captions_greedy, greedy_prob = annotator.annotate(images, mode="greedy")
+    captions_sample, sample_prob = annotator.annotate(images, mode="sample", top_k=10)
+    plt.figure(figsize=(20, 15))
     for i in range(l * l):
         plt.subplot(l, l, i + 1)
         plt.imshow(images[i].permute(1, 2, 0))
-        plt.title(captions[i] + "\n" + f"{probabilities[i]:.4%}")
+        plt.title(f"Beam: {captions_beam[i]} ({beam_prob[i]:.3%})\n"
+                  f"Greedy: {captions_greedy[i]} ({greedy_prob[i]:.3%})\n"
+                  f"Sample: {captions_sample[i]} ({sample_prob[i]:.3%})")
         plt.axis("off")
     plt.show()
 
