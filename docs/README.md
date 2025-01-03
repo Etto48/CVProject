@@ -9,3 +9,5 @@ The overall architecture of the model is inspired by microsoft/GIT-base[^2].
 [^1]: DINOv2: Learning Robust Visual Features without Supervision [Oquab et al. 2024](https://arxiv.org/abs/2304.07193)
 
 [^2]: GIT: A Generative Image-to-text Transformer for Vision and Language [Wang et al. 2022](https://arxiv.org/abs/2205.14100)
+
+Refer to the demo notebook for a deeper explanation of the model and its components. You can find it [here](../colab.ipynb).
