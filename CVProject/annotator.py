@@ -358,25 +358,20 @@ class Annotator(nn.Module):
                 beam_indices = top_k_indices // (self.tokenizer.max_token_value + 1)
                 token_indices = top_k_indices % (self.tokenizer.max_token_value + 1)
                 # update the probabilities
-                old_probabilities = probabilities
+                old_probabilities = probabilities[torch.arange(batch_size).view(batch_size, 1), beam_indices]
                 probabilities = top_k_values
-                # update the captions
-                old_captions = captions
-                finished_mask = finished.view(batch_size, beam_size, 1).repeat(1, 1, captions.shape[2])
-                captions = captions[torch.arange(batch_size).view(batch_size, 1), beam_indices, :]
-                # restore the old captions and probabilities for finished beams that must not be updated
-                captions[finished_mask] = old_captions[finished_mask]
+                finished = finished[torch.arange(batch_size).view(batch_size, 1), beam_indices]
+                lengths = lengths[torch.arange(batch_size).view(batch_size, 1), beam_indices]
+                # reset probabilities for finished beams
                 probabilities[finished] = old_probabilities[finished]
+                # update the captions
+                captions = captions[torch.arange(batch_size).view(batch_size, 1), beam_indices, :]
                 generated_tokens = token_indices
             captions = torch.cat([captions, generated_tokens.view(batch_size, beam_size, 1)], dim=2)
-            finished = (captions[:, :, 1:] == self.tokenizer.max_token_value).any(dim=-1)
-            lengths = torch.full((batch_size, beam_size), captions.shape[2], dtype=torch.long, device=self.device)
-            for i in range(batch_size):
-                for j in range(beam_size):
-                    if finished[i, j]:
-                        lengths[i, j] = (captions[i, j, 1:] == self.tokenizer.max_token_value).nonzero()[0].item() + 1
+            finished |= (generated_tokens == self.tokenizer.max_token_value)
             if finished.all():
                 break
+            lengths += ~finished
             if max_length is not None and captions.shape[2] > max_length + 1:
                 break
             loading_bar.update(1)
