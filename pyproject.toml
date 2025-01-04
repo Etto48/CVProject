@@ -7,6 +7,12 @@ dependencies = [ "torch", "torchvision", "pandas", "tiktoken", "transformers", "
 name = "Ettore Ricci"
 email = "ettore.ricci.coding@gmail.com"
 
+[[project.authors]]
+name = "Paolo Palumbo"
+
+[[project.authors]]
+name = "Erni Deliallisi"
+
 [build-system]
 requires = [ "setuptools >= 61.0",]
 build-backend = "setuptools.build_meta"
